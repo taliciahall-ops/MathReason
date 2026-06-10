@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MathReason — NSW Maths Reasoning Coach</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Nunito', 'Segoe UI', sans-serif; background: #F9FAFB; }
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-7px); }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    const MODEL_REASONING = "gemini-2.0-flash-thinking-exp";
+    const MODEL_SUPPORT = "gemini-2.0-flash";
+
+    const MATH_SYMBOLS = [
+      { label: "²", insert: "²" }, { label: "³", insert: "³" },
+      { label: "√", insert: "√" }, { label: "÷", insert: "÷" },
+      { label: "×", insert: "×" }, { label: "≠", insert: "≠" },
+      { label: "≤", insert: "≤" }, { label: "≥", insert: "≥" },
+      { label: "π", insert: "π" }, { label: "∞", insert: "∞" },
+      { label: "±", insert: "±" }, { label: "θ", insert: "θ" },
+      { label: "∑", insert: "∑" }, { label: "½", insert: "½" },
+      { label: "¼", insert: "¼" }, { label: "°", insert: "°" },
+      { label: "∠", insert: "∠" }, { label: "α", insert: "α" },
+      { label: "β", insert: "β" },
+    ];
+
+    const MODES = { REASONING: "reasoning", PRIOR_KNOWLEDGE: "prior_knowledge", TEACH_BACK: "teach_back" };
+
+    const YEAR_GROUP_CONTEXT = {
+      "Year 7":  { stage: "Stage 4", age: "11-12", depth: "Use very simple, everyday language. Reasoning expectations are basic — students should be able to say what they did and give a simple reason why, e.g. 'I added these because they are like terms.' Avoid abstract justification. Celebrate any attempt at explanation warmly.", syllabus: "NSW Mathematics K-10 Stage 4" },
+      "Year 8":  { stage: "Stage 4", age: "12-13", depth: "Use clear, friendly language. Reasoning expectations are developing — students should explain their steps in their own words and start connecting ideas, e.g. 'I used this rule because...' Short explanations are fine.", syllabus: "NSW Mathematics K-10 Stage 4" },
+      "Year 9":  { stage: "Stage 5", age: "13-14", depth: "Students should be able to explain their reasoning with some mathematical language and link steps to rules or concepts they know. Expect 2-3 sentence explanations. Gently push for the 'why' behind each step.", syllabus: "NSW Mathematics K-10 Stage 5" },
+      "Year 10": { stage: "Stage 5", age: "14-15", depth: "Students should explain their reasoning clearly using correct mathematical language and justify each step with reference to a rule, definition, or prior result. Expect structured explanations. Push for precision in language.", syllabus: "NSW Mathematics K-10 Stage 5" },
+      "Year 11": { stage: "Stage 6", age: "15-16", depth: "Students should produce logical, well-structured justifications using formal mathematical language and notation. They should reference theorems, definitions, and prior results explicitly. Hold them to a high standard of rigour.", syllabus: "NSW Mathematics Stage 6" },
+      "Year 12": { stage: "Stage 6", age: "16-17", depth: "Students should demonstrate HSC-level mathematical reasoning: precise, formal, complete justifications that could appear in an exam response. Push for full proofs and rigorous argument where appropriate.", syllabus: "NSW Mathematics Stage 6" },
+    };
+
+    function buildSystemPrompts(yearGroup) {
+      const ctx = YEAR_GROUP_CONTEXT[yearGroup] || YEAR_GROUP_CONTEXT["Year 9"];
+      return {
+        [MODES.REASONING]: `You are MathMentor, a Socratic maths tutor for a NSW ${yearGroup} student (${ctx.stage}, age ${ctx.age}).
+Your role is to develop their mathematical reasoning and communication, aligned with ${ctx.syllabus} Working Mathematically outcomes: Reasoning, Communicating, and Problem Solving.
+
+YEAR LEVEL CONTEXT — calibrate ALL responses to this:
+${ctx.depth}
+
+CRITICAL RULES:
+- BEFORE responding, carefully verify the student's mathematical working yourself. Do the calculation. Only after confirming whether it is correct or not should you respond. Do NOT assume the student is wrong — if the maths checks out, say so clearly.
+- ALWAYS explicitly distinguish between two types of issues — mathematical errors and reasoning errors. Use these kinds of phrases:
+  * "Your working out is correct — but can you explain to me WHY you did that step before we move on?"
+  * "That's the right thinking, but somewhere in your working out there's a calculation error — let's have another look."
+  * "Your reasoning is on the right track, but the maths on this line isn't quite right — can you check that step?"
+  * "The maths here is correct, but I want to make sure you understand why it works — can you explain your reasoning?"
+  * "Both your reasoning and your working look good here! Now let's think about the next step..."
+- NEVER say "correct" or "incorrect" without specifying whether it is the maths, the reasoning, or both
+- NEVER tell a student their maths is wrong unless you have independently verified it is actually wrong
+- Always be explicit: is the problem with (a) the mathematical calculation/procedure, (b) the conceptual reasoning/understanding, or (c) both?
+- Ask one focused Socratic question at a time, calibrated to ${yearGroup} level
+- If you detect a prior knowledge gap, respond ONLY with this exact JSON:
+  {"mode": "prior_knowledge", "gap_topic": "[topic name]", "gap_explanation": "[one sentence explaining the gap]"}
+- If the student has demonstrated strong understanding AND correct working after several exchanges, respond ONLY with:
+  {"mode": "teach_back", "concept": "[the main concept they've mastered]"}
+- Otherwise respond naturally as a Socratic tutor in plain text
+- Keep responses concise (2-4 sentences max)
+- Be warm, encouraging, and age-appropriate for a ${yearGroup} student`,
+
+        [MODES.PRIOR_KNOWLEDGE]: `You are MathMentor helping a ${yearGroup} student (${ctx.stage}) build prior knowledge they're missing.
+
+YEAR LEVEL CONTEXT: ${ctx.depth}
+
+Your job:
+1. Give ONE short, targeted question on the prerequisite concept, pitched at ${yearGroup} level
+2. Always explicitly tell them whether their mathematical working is correct, their reasoning is correct, or both — then either explain the error or praise and give the next question
+3. After 2-3 successful questions, respond ONLY with this exact JSON:
+   {"mode": "return_to_problem", "encouragement": "[short encouraging message to return to original problem]"}
+
+Keep language and expectations appropriate for ${yearGroup}. Be warm and clear.`,
+
+        [MODES.TEACH_BACK]: `You are playing the role of a CONFUSED STUDENT. A ${yearGroup} student is going to teach YOU the maths concept they just learned.
+
+YEAR LEVEL CONTEXT: Calibrate your confusion and questions to what a ${yearGroup} student would genuinely struggle to explain — ${ctx.depth}
+
+Your job:
+1. Ask genuine "confused student" questions appropriate to this year level
+2. Make occasional small mistakes for them to correct
+3. Say things like "ohh wait so you mean..." and "I'm confused about the part where..."
+4. After they've explained thoroughly and you've asked 2-3 questions, respond ONLY with:
+   {"mode": "complete", "summary": "[2-3 sentence summary of what they demonstrated they understand]"}
+
+Stay in character as a confused but eager student. Be warm and a bit unsure.`
+      };
+    }
+
+    function parseAIResponse(text) {
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*?\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.mode) return { type: "json", data: parsed };
+        }
+      } catch (e) {}
+      return { type: "text", data: text };
+    }
+
+    async function callClaude(messages, systemPrompt, model = MODEL_SUPPORT) {
+      try {
+        const apiKey = window.GEMINI_API_KEY || "";
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+        // Convert messages to Gemini format
+        const geminiContents = messages.map(msg => {
+          if (typeof msg.content === "string") {
+            return { role: msg.role === "assistant" ? "model" : "user", parts: [{ text: msg.content }] };
+          }
+          // Handle array content (images + text)
+          const parts = msg.content.map(item => {
+            if (item.type === "text") return { text: item.text };
+            if (item.type === "image") return { inlineData: { mimeType: item.source.media_type, data: item.source.data } };
+            return null;
+          }).filter(Boolean);
+          return { role: "user", parts };
+        });
+
+        const body = {
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: geminiContents,
+          generationConfig: { maxOutputTokens: 1000, temperature: 0.7 }
+        };
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          console.error("Gemini API error", response.status, err);
+          return `__ERROR__: API returned ${response.status}`;
+        }
+        const data = await response.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "__ERROR__: Empty response";
+      } catch (err) {
+        console.error("Fetch error", err);
+        return `__ERROR__: ${err.message}`;
+      }
+    }
+
+    function insertIntoField(setter, currentValue, symbol, inputRef) {
+      const el = inputRef?.current;
+      if (el && typeof el.selectionStart === "number") {
+        const start = el.selectionStart;
+        const end = el.selectionEnd;
+        const newVal = currentValue.slice(0, start) + symbol + currentValue.slice(end);
+        setter(newVal);
+        setTimeout(() => { el.focus(); el.setSelectionRange(start + symbol.length, start + symbol.length); }, 0);
+      } else {
+        setter(currentValue + symbol);
+      }
+    }
+
+    function ModeTag({ mode }) {
+      const config = {
+        [MODES.REASONING]: { label: "Reasoning Mode", color: "#4F46E5", bg: "#EEF2FF" },
+        [MODES.PRIOR_KNOWLEDGE]: { label: "Prior Knowledge Check", color: "#D97706", bg: "#FFFBEB" },
+        [MODES.TEACH_BACK]: { label: "Teach It Back Mode", color: "#059669", bg: "#ECFDF5" },
+      };
+      const c = config[mode];
+      return (
+        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", padding: "3px 10px", borderRadius: 20, background: c.bg, color: c.color, textTransform: "uppercase" }}>
+          {c.label}
+        </span>
+      );
+    }
+
+    function SymbolBar({ onInsert }) {
+      return (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, background: "#F3F4F6", borderRadius: 10, padding: 8, border: "1px solid #E5E7EB", marginTop: 6 }}>
+          {MATH_SYMBOLS.map(s => (
+            <button key={s.label} type="button" onClick={() => onInsert(s.insert)}
+              style={{ padding: "5px 9px", borderRadius: 6, border: "1px solid #D1D5DB", background: "white", fontSize: 14, cursor: "pointer", fontFamily: "serif", color: "#111827", lineHeight: 1 }}
+              onMouseOver={e => e.currentTarget.style.background = "#EEF2FF"}
+              onMouseOut={e => e.currentTarget.style.background = "white"}
+            >{s.label}</button>
+          ))}
+        </div>
+      );
+    }
+
+    function Message({ msg }) {
+      const isUser = msg.role === "user";
+      const isSystem = msg.role === "system";
+      if (isSystem) {
+        return (
+          <div style={{ textAlign: "center", padding: "8px 16px", margin: "8px 0", background: msg.bg || "#F3F4F6", borderRadius: 12, fontSize: 13, color: msg.color || "#6B7280", fontStyle: "italic" }}>
+            {msg.content}
+          </div>
+        );
+      }
+      return (
+        <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: 12, gap: 10, alignItems: "flex-end" }}>
+          {!isUser && (
+            <div style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, color: "white", fontWeight: 700 }}>M</div>
+          )}
+          <div style={{ maxWidth: "72%", padding: "12px 16px", background: isUser ? "#4F46E5" : "#F9FAFB", color: isUser ? "white" : "#111827", borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px", fontSize: 14, lineHeight: 1.6, border: isUser ? "none" : "1px solid #E5E7EB", boxShadow: "0 1px 2px rgba(0,0,0,0.05)" }}>
+            {msg.imagePreview && <img src={msg.imagePreview} alt="uploaded work" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 8, display: "block" }} />}
+            <span style={{ whiteSpace: "pre-wrap" }}>{msg.content}</span>
+          </div>
+          {isUser && (
+            <div style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, background: "#E0E7FF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "#4F46E5" }}>U</div>
+          )}
+        </div>
+      );
+    }
+
+    function SessionSummary({ summary, onClose, sessionLog, originalProblem, yearGroup }) {
+      const gaps = sessionLog.filter(m => m.modeTransition === "prior_knowledge").map(m => m.gapTopic);
+      const teachBack = sessionLog.find(m => m.modeTransition === "teach_back");
+      const ctx = YEAR_GROUP_CONTEXT[yearGroup] || YEAR_GROUP_CONTEXT["Year 9"];
+
+      const downloadSummary = () => {
+        const content = `MATHREASON — SESSION SUMMARY\nGenerated: ${new Date().toLocaleString()}\nYear Group: ${yearGroup} (${ctx.stage})\nNSW Mathematics — Working Mathematically\n\nPROBLEM ATTEMPTED:\n${originalProblem || "(uploaded image)"}\n\nKNOWLEDGE GAPS IDENTIFIED:\n${gaps.length > 0 ? gaps.map(g => `  • ${g}`).join("\n") : "  • No significant gaps detected"}\n\nTEACH IT BACK:\n${teachBack ? `  • Student demonstrated understanding of: ${teachBack.concept}` : "  • Not reached in this session"}\n\nAI ASSESSMENT:\n${summary}\n\nNSW WORKING MATHEMATICALLY OUTCOMES ADDRESSED (${ctx.syllabus}):\n  • Reasoning: Student justified their mathematical thinking\n  • Communicating: Student articulated their problem-solving process\n  • Problem Solving: Student worked through mathematical challenges\n\n---\nGenerated by MathReason | ${ctx.syllabus} Aligned`;
+        const blob = new Blob([content], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `MathReason_${yearGroup.replace(" ","")}_${new Date().toISOString().slice(0,10)}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }}>
+          <div style={{ background: "white", borderRadius: 20, padding: 32, maxWidth: 480, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+            <div style={{ textAlign: "center", marginBottom: 24 }}>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>🎉</div>
+              <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827" }}>Session Complete!</h2>
+              <p style={{ color: "#6B7280", fontSize: 14, marginTop: 4 }}>Great work reasoning through that problem</p>
+            </div>
+            <div style={{ background: "#F9FAFB", borderRadius: 12, padding: 16, marginBottom: 16, border: "1px solid #E5E7EB" }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>AI Assessment</p>
+              <p style={{ fontSize: 14, color: "#111827", lineHeight: 1.6 }}>{summary}</p>
+            </div>
+            {gaps.length > 0 && (
+              <div style={{ background: "#FFFBEB", borderRadius: 12, padding: 16, marginBottom: 16, border: "1px solid #FDE68A" }}>
+                <p style={{ fontSize: 12, fontWeight: 600, color: "#D97706", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Knowledge Gaps Addressed</p>
+                {gaps.map((g, i) => <p key={i} style={{ fontSize: 14, color: "#92400E", margin: "4px 0" }}>✓ {g}</p>)}
+              </div>
+            )}
+            <div style={{ background: "#ECFDF5", borderRadius: 12, padding: 16, marginBottom: 24, border: "1px solid #A7F3D0" }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: "#059669", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>NSW Working Mathematically — {ctx.stage}</p>
+              {["Reasoning", "Communicating", "Problem Solving"].map(o => <p key={o} style={{ fontSize: 14, color: "#065F46", margin: "4px 0" }}>✓ {o}</p>)}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={downloadSummary} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#4F46E5", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>⬇ Download Summary</button>
+              <button onClick={onClose} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "1px solid #E5E7EB", background: "white", color: "#374151", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>New Session</button>
+            </div>
+            <p style={{ fontSize: 11, color: "#9CA3AF", textAlign: "center", marginTop: 12 }}>Share this summary with your teacher as formative assessment evidence</p>
+          </div>
+        </div>
+      );
+    }
+
+    function ApiKeySetup({ onSave }) {
+      const [key, setKey] = useState("");
+      const isValid = key.length > 10;
+      return (
+        <div style={{ minHeight: "100vh", background: "linear-gradient(160deg, #EEF2FF 0%, #F5F3FF 60%, #FAF5FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ background: "white", borderRadius: 20, padding: 36, maxWidth: 440, width: "100%", boxShadow: "0 4px 24px rgba(79,70,229,0.1)" }}>
+            <div style={{ textAlign: "center", marginBottom: 24 }}>
+              <div style={{ width: 64, height: 64, borderRadius: 18, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, margin: "0 auto 14px", boxShadow: "0 8px 24px rgba(79,70,229,0.3)" }}>🧮</div>
+              <h1 style={{ fontSize: 26, fontWeight: 900, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>MathReason</h1>
+              <p style={{ color: "#6B7280", fontSize: 14, marginTop: 6 }}>NSW Maths Reasoning Coach</p>
+            </div>
+            <div style={{ background: "#ECFDF5", borderRadius: 12, padding: 14, marginBottom: 20, border: "1px solid #A7F3D0" }}>
+              <p style={{ fontSize: 13, color: "#065F46", lineHeight: 1.6 }}>
+                <strong>Free setup:</strong> This app uses Google Gemini AI — completely free. Get your free API key at <strong>aistudio.google.com</strong> → click "Get API Key". No credit card needed!
+              </p>
+            </div>
+            <label style={{ fontSize: 13, fontWeight: 700, color: "#374151", display: "block", marginBottom: 8 }}>Google Gemini API Key</label>
+            <input
+              type="password"
+              value={key}
+              onChange={e => setKey(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && isValid && onSave(key)}
+              placeholder="Paste your Gemini API key here..."
+              style={{ width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid #E5E7EB", fontSize: 14, outline: "none", marginBottom: 12, fontFamily: "monospace" }}
+              onFocus={e => e.target.style.borderColor = "#4F46E5"}
+              onBlur={e => e.target.style.borderColor = "#E5E7EB"}
+            />
+            <button
+              onClick={() => isValid && onSave(key)}
+              disabled={!isValid}
+              style={{ width: "100%", padding: "13px", borderRadius: 10, border: "none", background: isValid ? "linear-gradient(135deg, #4F46E5, #7C3AED)" : "#E5E7EB", color: isValid ? "white" : "#9CA3AF", fontSize: 15, fontWeight: 800, cursor: isValid ? "pointer" : "not-allowed", fontFamily: "inherit" }}
+            >Start Using MathReason →</button>
+            <p style={{ fontSize: 11, color: "#9CA3AF", textAlign: "center", marginTop: 12 }}>Your key is saved locally in this browser only</p>
+          </div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [apiKey, setApiKey] = useState(() => localStorage.getItem("mr_gemini_apikey") || "");
+      const [screen, setScreen] = useState("home");
+      const [yearGroup, setYearGroup] = useState("Year 9");
+      const [problem, setProblem] = useState("");
+      const [workingText, setWorkingText] = useState("");
+      const [messages, setMessages] = useState([]);
+      const [input, setInput] = useState("");
+      const [loading, setLoading] = useState(false);
+      const [sessionLog, setSessionLog] = useState([]);
+      const [originalProblem, setOriginalProblem] = useState("");
+      const [showSummary, setShowSummary] = useState(false);
+      const [summaryText, setSummaryText] = useState("");
+      const [imagePreview, setImagePreview] = useState(null);
+      const [imageBase64, setImageBase64] = useState(null);
+      const [imageMediaType, setImageMediaType] = useState("image/jpeg");
+      const [showSymbolsProblem, setShowSymbolsProblem] = useState(false);
+      const [showSymbolsWorking, setShowSymbolsWorking] = useState(false);
+      const [showSymbolsChat, setShowSymbolsChat] = useState(false);
+      const [conversationHistory, setConversationHistory] = useState([]);
+      const [currentMode, setCurrentMode] = useState(MODES.REASONING);
+      const [pendingReturn, setPendingReturn] = useState(null);
+      const consecutiveNudgesRef = useRef(0);
+      const pendingReturnRef = useRef(null);
+      const messagesEndRef = useRef(null);
+      const chatInputRef = useRef(null);
+      const problemRef = useRef(null);
+      const workingRef = useRef(null);
+      const fileInputRef = useRef(null);
+
+      useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+      const saveApiKey = (key) => {
+        localStorage.setItem("mr_gemini_apikey", key);
+        window.GEMINI_API_KEY = key;
+        setApiKey(key);
+      };
+
+      useEffect(() => {
+        if (apiKey) window.GEMINI_API_KEY = apiKey;
+      }, [apiKey]);
+
+      const handleFileUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const supported = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+        const mediaType = file.type;
+        const needsConversion = !supported.includes(mediaType);
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          if (needsConversion) {
+            const img = new Image();
+            img.onload = () => {
+              const canvas = document.createElement("canvas");
+              canvas.width = img.width; canvas.height = img.height;
+              canvas.getContext("2d").drawImage(img, 0, 0);
+              const jpegDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+              setImagePreview(jpegDataUrl); setImageBase64(jpegDataUrl.split(",")[1]); setImageMediaType("image/jpeg");
+            };
+            img.onerror = () => { const d = ev.target.result; setImagePreview(d); setImageBase64(d.split(",")[1]); setImageMediaType("image/jpeg"); };
+            img.src = ev.target.result;
+          } else {
+            const d = ev.target.result; setImagePreview(d); setImageBase64(d.split(",")[1]); setImageMediaType(mediaType);
+          }
+        };
+        reader.readAsDataURL(file);
+      };
+
+      const processAIText = async (rawText, currentHistory) => {
+        if (rawText.startsWith("__ERROR__")) {
+          consecutiveNudgesRef.current += 1;
+          if (consecutiveNudgesRef.current >= 2) {
+            consecutiveNudgesRef.current = 0;
+            const explainHistory = [...currentHistory, { role: "user", content: "I'm still stuck. Can you walk me through the correct approach step by step?" }];
+            setMessages(prev => [...prev, { role: "system", content: "💡 Let's take a step back — here's how to approach this...", bg: "#EEF2FF", color: "#4338CA" }]);
+            const explainRaw = await callClaude(explainHistory, buildSystemPrompts(yearGroup)[currentMode], MODEL_REASONING);
+            if (!explainRaw.startsWith("__ERROR__")) {
+              const p = parseAIResponse(explainRaw);
+              setMessages(prev => [...prev, { role: "assistant", content: p.type === "text" ? p.data : "Let me walk you through this step by step." }]);
+              setConversationHistory([...explainHistory, { role: "assistant", content: explainRaw }]);
+            }
+          } else {
+            const lastMsg = [...currentHistory].reverse().find(m => m.role === "assistant");
+            setMessages(prev => [...prev, { role: "assistant", content: "Hmmm, I don't think that's quite right. How about we look back at the question and try again? 🤔" }, ...(lastMsg ? [{ role: "assistant", content: lastMsg.content }] : [])]);
+          }
+          return;
+        }
+
+        const lowerText = rawText.toLowerCase();
+        const indicatesIncorrect = lowerText.includes("calculation error") || lowerText.includes("not quite right") || lowerText.includes("isn't quite right") || lowerText.includes("let's have another look") || lowerText.includes("check that step");
+        if (indicatesIncorrect) { consecutiveNudgesRef.current += 1; } else { consecutiveNudgesRef.current = 0; }
+
+        if (consecutiveNudgesRef.current >= 2) {
+          consecutiveNudgesRef.current = 0;
+          const p = parseAIResponse(rawText);
+          setMessages(prev => [...prev, { role: "assistant", content: p.type === "text" ? p.data : rawText }]);
+          const explainHistory = [...currentHistory, { role: "assistant", content: rawText }, { role: "user", content: "I'm still not sure. Can you explain the correct approach step by step?" }];
+          setMessages(prev => [...prev, { role: "system", content: "💡 Let's take a step back — here's how to approach this...", bg: "#EEF2FF", color: "#4338CA" }]);
+          const explainRaw = await callClaude(explainHistory, buildSystemPrompts(yearGroup)[currentMode], MODEL_REASONING);
+          if (!explainRaw.startsWith("__ERROR__")) {
+            const ep = parseAIResponse(explainRaw);
+            setMessages(prev => [...prev, { role: "assistant", content: ep.type === "text" ? ep.data : explainRaw }]);
+            setConversationHistory([...explainHistory, { role: "assistant", content: explainRaw }]);
+          }
+          return;
+        }
+
+        const parsed = parseAIResponse(rawText);
+        if (parsed.type === "json") { await handleModeTransition(parsed.data, currentHistory, rawText); }
+        else { setMessages(prev => [...prev, { role: "assistant", content: parsed.data }]); setConversationHistory([...currentHistory, { role: "assistant", content: rawText }]); }
+      };
+
+      const handleModeTransition = async (data, currentHistory, rawResponse) => {
+        const updatedHistory = [...currentHistory, { role: "assistant", content: rawResponse }];
+        if (data.mode === "prior_knowledge") {
+          setCurrentMode(MODES.PRIOR_KNOWLEDGE);
+          setSessionLog(prev => [...prev, { modeTransition: "prior_knowledge", gapTopic: data.gap_topic }]);
+          setMessages(prev => [...prev, { role: "system", content: `📚 Let's pause — ${data.gap_explanation}`, bg: "#FFFBEB", color: "#92400E" }]);
+          const priorHistory = [{ role: "user", content: `Help me understand: ${data.gap_topic}. ${data.gap_explanation}. Give me your first targeted question on this.` }];
+          setConversationHistory(priorHistory);
+          pendingReturnRef.current = { originalHistory: updatedHistory };
+          setPendingReturn({ originalHistory: updatedHistory });
+          const priorRaw = await callClaude(priorHistory, buildSystemPrompts(yearGroup)[MODES.PRIOR_KNOWLEDGE]);
+          await processAIText(priorRaw, priorHistory);
+
+        } else if (data.mode === "teach_back") {
+          setCurrentMode(MODES.TEACH_BACK);
+          setSessionLog(prev => [...prev, { modeTransition: "teach_back", concept: data.concept }]);
+          setMessages(prev => [...prev, { role: "system", content: `🎓 Amazing work! Now teach it back — explain "${data.concept}" to MathMentor as if they're a confused student.`, bg: "#ECFDF5", color: "#065F46" }]);
+          const teachHistory = [{ role: "user", content: `The student is going to teach you about: ${data.concept}. Play the role of a confused student asking your first genuine question.` }];
+          setConversationHistory(teachHistory);
+          const teachRaw = await callClaude(teachHistory, buildSystemPrompts(yearGroup)[MODES.TEACH_BACK]);
+          await processAIText(teachRaw, teachHistory);
+
+        } else if (data.mode === "return_to_problem") {
+          setCurrentMode(MODES.REASONING);
+          setMessages(prev => [...prev, { role: "system", content: `✅ ${data.encouragement} Let's return to your original problem!`, bg: "#EEF2FF", color: "#4338CA" }]);
+          const saved = pendingReturnRef.current;
+          if (saved) {
+            pendingReturnRef.current = null; setPendingReturn(null);
+            const returnHistory = [...saved.originalHistory, { role: "user", content: "I've reviewed the prerequisite concept. Let's continue with the original problem now." }];
+            setConversationHistory(returnHistory);
+            const returnRaw = await callClaude(returnHistory, buildSystemPrompts(yearGroup)[MODES.REASONING], MODEL_REASONING);
+            await processAIText(returnRaw, returnHistory);
+          }
+        } else if (data.mode === "complete") {
+          setSummaryText(data.summary); setShowSummary(true);
+        }
+      };
+
+      const startSession = async () => {
+        if (!problem.trim() && !imageBase64) return;
+        setOriginalProblem(problem); setScreen("chat"); setCurrentMode(MODES.REASONING); setLoading(true);
+        const userContent = [];
+        if (imageBase64) userContent.push({ type: "image", source: { type: "base64", media_type: imageMediaType, data: imageBase64 } });
+        const parts = [problem && `Problem: ${problem}`, workingText && `My working and reasoning so far: ${workingText}`].filter(Boolean);
+        const textStr = parts.length ? parts.join("\n\n") : "I've uploaded my handwritten working above. Please help me reason through it.";
+        userContent.push({ type: "text", text: textStr });
+        const initHistory = [{ role: "user", content: userContent }];
+        setConversationHistory(initHistory);
+        setMessages([{ role: "user", content: textStr, imagePreview }]);
+        try { const raw = await callClaude(initHistory, buildSystemPrompts(yearGroup)[MODES.REASONING], MODEL_REASONING); await processAIText(raw, initHistory); }
+        finally { setLoading(false); }
+      };
+
+      const sendMessage = async () => {
+        if (!input.trim() || loading) return;
+        const userText = input.trim(); setInput(""); setLoading(true);
+        setMessages(prev => [...prev, { role: "user", content: userText }]);
+        const newHistory = [...conversationHistory, { role: "user", content: userText }];
+        setConversationHistory(newHistory);
+        const isReasoning = currentMode === MODES.REASONING;
+        try { const raw = await callClaude(newHistory, buildSystemPrompts(yearGroup)[currentMode], isReasoning ? MODEL_REASONING : MODEL_SUPPORT); await processAIText(raw, newHistory); }
+        finally { setLoading(false); }
+      };
+
+      const resetAll = () => {
+        setScreen("home"); setProblem(""); setWorkingText(""); setMessages([]); setInput(""); setLoading(false);
+        setSessionLog([]); setOriginalProblem(""); setShowSummary(false); setSummaryText("");
+        setImagePreview(null); setImageBase64(null); setImageMediaType("image/jpeg");
+        setShowSymbolsProblem(false); setShowSymbolsWorking(false); setShowSymbolsChat(false);
+        setConversationHistory([]); setCurrentMode(MODES.REASONING); setPendingReturn(null);
+        setYearGroup("Year 9"); consecutiveNudgesRef.current = 0; pendingReturnRef.current = null;
+      };
+
+      if (!apiKey) return <ApiKeySetup onSave={saveApiKey} />;
+
+      if (screen === "home") return (
+        <div style={{ minHeight: "100vh", background: "linear-gradient(160deg, #EEF2FF 0%, #F5F3FF 60%, #FAF5FF 100%)", padding: "0 16px 40px" }}>
+          <div style={{ maxWidth: 560, margin: "0 auto", paddingTop: 36 }}>
+            <div style={{ textAlign: "center", marginBottom: 28 }}>
+              <div style={{ width: 68, height: 68, borderRadius: 20, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, margin: "0 auto 14px", boxShadow: "0 8px 24px rgba(79,70,229,0.3)" }}>🧮</div>
+              <h1 style={{ fontSize: 32, fontWeight: 900, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>MathReason</h1>
+              <p style={{ color: "#6B7280", fontSize: 14, margin: "6px 0 12px", fontWeight: 600 }}>Your NSW Maths Reasoning Coach</p>
+              <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                {["Reasoning", "Communicating", "Problem Solving"].map(o => (
+                  <span key={o} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 20, background: "#EEF2FF", color: "#4F46E5", fontWeight: 700, border: "1px solid #C7D2FE" }}>{o}</span>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ background: "white", borderRadius: 20, padding: 26, boxShadow: "0 4px 24px rgba(79,70,229,0.08)", border: "1px solid #E5E7EB" }}>
+              {/* Year group */}
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ fontSize: 13, fontWeight: 700, color: "#374151", display: "block", marginBottom: 8 }}>What year are you in?</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {Object.keys(YEAR_GROUP_CONTEXT).map(yr => (
+                    <button key={yr} type="button" onClick={() => setYearGroup(yr)}
+                      style={{ padding: "7px 14px", borderRadius: 10, border: `1.5px solid ${yearGroup === yr ? "#4F46E5" : "#E5E7EB"}`, background: yearGroup === yr ? "#EEF2FF" : "white", color: yearGroup === yr ? "#4F46E5" : "#6B7280", fontSize: 13, fontWeight: yearGroup === yr ? 800 : 600, cursor: "pointer", fontFamily: "inherit" }}
+                    >{yr}</button>
+                  ))}
+                </div>
+                <p style={{ fontSize: 11, color: "#9CA3AF", margin: "6px 0 0" }}>MathMentor adjusts its expectations to your year level</p>
+              </div>
+
+              {/* Problem */}
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>What's the problem you're working on?</label>
+                  <button type="button" onClick={() => setShowSymbolsProblem(v => !v)}
+                    style={{ fontSize: 11, padding: "3px 10px", borderRadius: 8, border: "1px solid #E5E7EB", background: showSymbolsProblem ? "#EEF2FF" : "white", color: showSymbolsProblem ? "#4F46E5" : "#9CA3AF", cursor: "pointer", fontWeight: 600 }}>± symbols</button>
+                </div>
+                {showSymbolsProblem && <SymbolBar onInsert={(s) => insertIntoField(setProblem, problem, s, problemRef)} />}
+                <textarea ref={problemRef} value={problem} onChange={e => setProblem(e.target.value)}
+                  placeholder="e.g. Solve x² + 5x + 6 = 0 using the quadratic formula..." rows={3}
+                  style={{ width: "100%", padding: "11px 13px", borderRadius: 12, border: "1.5px solid #E5E7EB", fontSize: 14, lineHeight: 1.6, resize: "vertical", fontFamily: "inherit", outline: "none", boxSizing: "border-box", color: "#111827", marginTop: 6 }}
+                  onFocus={e => e.target.style.borderColor = "#4F46E5"} onBlur={e => e.target.style.borderColor = "#E5E7EB"} />
+              </div>
+
+              {/* Working */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Show your working & reasoning</label>
+                  <button type="button" onClick={() => setShowSymbolsWorking(v => !v)}
+                    style={{ fontSize: 11, padding: "3px 10px", borderRadius: 8, border: "1px solid #E5E7EB", background: showSymbolsWorking ? "#EEF2FF" : "white", color: showSymbolsWorking ? "#4F46E5" : "#9CA3AF", cursor: "pointer", fontWeight: 600 }}>± symbols</button>
+                </div>
+                {showSymbolsWorking && <SymbolBar onInsert={(s) => insertIntoField(setWorkingText, workingText, s, workingRef)} />}
+                <textarea ref={workingRef} value={workingText} onChange={e => setWorkingText(e.target.value)}
+                  placeholder="Write your steps and explain your thinking..." rows={4}
+                  style={{ width: "100%", padding: "11px 13px", borderRadius: 12, border: "1.5px solid #E5E7EB", fontSize: 14, lineHeight: 1.6, resize: "vertical", fontFamily: "inherit", outline: "none", boxSizing: "border-box", color: "#111827", marginTop: 6 }}
+                  onFocus={e => e.target.style.borderColor = "#4F46E5"} onBlur={e => e.target.style.borderColor = "#E5E7EB"} />
+                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                  <button type="button" onClick={() => fileInputRef.current?.click()}
+                    style={{ fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "1px solid #E5E7EB", background: "white", color: "#6B7280", cursor: "pointer", fontWeight: 600 }}>📎 Upload handwritten working</button>
+                  <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} style={{ display: "none" }} />
+                  {imagePreview && <span style={{ fontSize: 12, color: "#059669", fontWeight: 600 }}>✓ Image attached</span>}
+                </div>
+                {imagePreview && (
+                  <div style={{ marginTop: 8, position: "relative", display: "inline-block" }}>
+                    <img src={imagePreview} alt="preview" style={{ maxHeight: 90, borderRadius: 8, border: "1px solid #E5E7EB" }} />
+                    <button type="button" onClick={() => { setImagePreview(null); setImageBase64(null); setImageMediaType("image/jpeg"); }}
+                      style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: "50%", background: "#EF4444", border: "none", color: "white", fontSize: 11, cursor: "pointer" }}>✕</button>
+                  </div>
+                )}
+              </div>
+
+              <button onClick={startSession} disabled={!problem.trim() && !imageBase64}
+                style={{ width: "100%", padding: "14px", borderRadius: 12, border: "none", background: (!problem.trim() && !imageBase64) ? "#E5E7EB" : "linear-gradient(135deg, #4F46E5, #7C3AED)", color: (!problem.trim() && !imageBase64) ? "#9CA3AF" : "white", fontSize: 15, fontWeight: 800, cursor: (!problem.trim() && !imageBase64) ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+                Start Reasoning Session →
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 18 }}>
+              {[{ emoji: "🔍", title: "Socratic AI", desc: "Questioned on your WHY, not just your answer" }, { emoji: "📚", title: "Gap Detection", desc: "Auto-identifies missing prior knowledge" }, { emoji: "🎓", title: "Teach It Back", desc: "Prove deep understanding by teaching the AI" }].map(f => (
+                <div key={f.title} style={{ background: "white", borderRadius: 14, padding: 14, border: "1px solid #E5E7EB", textAlign: "center" }}>
+                  <div style={{ fontSize: 22, marginBottom: 6 }}>{f.emoji}</div>
+                  <p style={{ fontSize: 11, fontWeight: 800, color: "#111827", margin: "0 0 4px" }}>{f.title}</p>
+                  <p style={{ fontSize: 10, color: "#6B7280", margin: 0, lineHeight: 1.4 }}>{f.desc}</p>
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: 11, color: "#9CA3AF", textAlign: "center", marginTop: 16, cursor: "pointer" }}
+              onClick={() => { localStorage.removeItem("mr_gemini_apikey"); setApiKey(""); }}>⚙ Change API key</p>
+          </div>
+        </div>
+      );
+
+      return (
+        <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#F9FAFB", position: "relative", overflow: "hidden" }}>
+          <div style={{ background: "white", padding: "10px 18px", borderBottom: "1px solid #E5E7EB", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 10, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>🧮</div>
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 800, color: "#111827", margin: 0 }}>MathReason</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <ModeTag mode={currentMode} />
+                  <span style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 600 }}>{yearGroup}</span>
+                </div>
+              </div>
+            </div>
+            <button onClick={resetAll} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: "1px solid #E5E7EB", background: "white", color: "#6B7280", cursor: "pointer", fontWeight: 700 }}>↩ New Session</button>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "18px 14px" }}>
+            <div style={{ maxWidth: 620, margin: "0 auto" }}>
+              {messages.map((msg, i) => <Message key={i} msg={msg} />)}
+              {loading && (
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, color: "white", fontWeight: 700, flexShrink: 0 }}>M</div>
+                  <div style={{ padding: "12px 16px", background: "#F9FAFB", borderRadius: "18px 18px 18px 4px", border: "1px solid #E5E7EB" }}>
+                    <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                      {[0,1,2].map(i => <div key={i} style={{ width: 7, height: 7, borderRadius: "50%", background: "#4F46E5", animation: "bounce 1.2s infinite", animationDelay: `${i*0.2}s` }} />)}
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+
+          <div style={{ background: "white", borderTop: "1px solid #E5E7EB", padding: "10px 14px 14px", flexShrink: 0 }}>
+            <div style={{ maxWidth: 620, margin: "0 auto" }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                <button type="button" onClick={() => setShowSymbolsChat(v => !v)}
+                  style={{ fontSize: 11, padding: "4px 10px", borderRadius: 8, border: "1px solid #E5E7EB", background: showSymbolsChat ? "#EEF2FF" : "white", color: showSymbolsChat ? "#4F46E5" : "#9CA3AF", cursor: "pointer", fontWeight: 600 }}>± symbols</button>
+              </div>
+              {showSymbolsChat && <div style={{ marginBottom: 8 }}><SymbolBar onInsert={(s) => insertIntoField(setInput, input, s, chatInputRef)} /></div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <input ref={chatInputRef} value={input} onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                  placeholder={currentMode === MODES.TEACH_BACK ? "Explain the concept as if teaching it..." : currentMode === MODES.PRIOR_KNOWLEDGE ? "Answer the question..." : "Explain your reasoning..."}
+                  disabled={loading}
+                  style={{ flex: 1, padding: "11px 15px", borderRadius: 12, border: "1.5px solid #E5E7EB", fontSize: 14, fontFamily: "inherit", outline: "none", color: "#111827", background: loading ? "#F9FAFB" : "white" }}
+                  onFocus={e => e.target.style.borderColor = "#4F46E5"} onBlur={e => e.target.style.borderColor = "#E5E7EB"} />
+                <button onClick={sendMessage} disabled={loading || !input.trim()}
+                  style={{ width: 44, height: 44, borderRadius: 12, border: "none", background: (loading || !input.trim()) ? "#E5E7EB" : "linear-gradient(135deg, #4F46E5, #7C3AED)", color: "white", fontSize: 18, cursor: (loading || !input.trim()) ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>→</button>
+              </div>
+            </div>
+          </div>
+
+          {showSummary && <SessionSummary summary={summaryText} onClose={resetAll} sessionLog={sessionLog} originalProblem={originalProblem} yearGroup={yearGroup} />}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
